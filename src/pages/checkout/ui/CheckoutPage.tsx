@@ -1,74 +1,150 @@
-import { useState } from 'react';
-import { Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import { ActivityIndicator, BackHandler, Image, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { fontFamily, Text } from '../../../shared/ui/typography';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { OrderCreate } from '../../../shared/api/serverContract';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { formatDeliveryDate, getDemoDay } from '../../../entities/meal/model/demoDay';
+import { useAuth } from '../../../features/auth/model/AuthProvider';
+import { LocalOrder } from '../../../entities/order/model/localOrder';
+import { addressText, DeliveryDraft, deliveryErrors, deliverySlots, orderRequest } from '../../../features/checkout/model/checkout';
 import { AppModal } from '../../../shared/ui/modal/AppModal';
 import { colors } from '../../../shared/ui/theme';
 import { useSession } from '../../../widgets/app-shell/model/Session';
 
-const demoSlots = ['12:00', '13:00', '18:00'];
+type Step = 'cart' | 'delivery' | 'review';
+const money = (value: number) => `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value)} ₽`;
 export function CheckoutPage() {
   const router = useRouter();
-  const { cart, deliveryDate, placeOrder } = useSession();
-  const [step, setStep] = useState<'cart' | 'delivery'>('cart');
-  const [city, setCity] = useState('');
-  const [street, setStreet] = useState('');
-  const [house, setHouse] = useState('');
-  const [apartment, setApartment] = useState('');
-  const [comment, setComment] = useState('');
-  const [slot, setSlot] = useState<string | null>(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const { state: auth } = useAuth();
+  const { cart, deliveryDate, placeOrder, deliveryDraft: draft, setDeliveryDraft, ordersReady, ordersError, retryOrders } = useSession();
+  const [step, setStep] = useState<Step>('cart');
   const [clearOpen, setClearOpen] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
   const [orderError, setOrderError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const submitLock = useRef(false);
+  const scroll = useRef<ScrollView>(null);
+  const [completed, setCompleted] = useState<LocalOrder | null>(null);
   const day = getDemoDay(deliveryDate);
-  const validAddress = city.trim().length > 0 && street.trim().length > 0 && house.trim().length > 0;
-  const canConfirm = validAddress && !!slot && cart.count > 0 && day.state === 'ready';
-  const openConfirm = () => { setShowErrors(true); if (canConfirm) setConfirmOpen(true); };
-  const submit = () => {
-    if (!slot || !canConfirm) return;
-    const request: OrderCreate = {
-      delivery_date: deliveryDate,
-      delivery_time: `${slot}:00`,
-      address_id: 1, // Только локальный демо-id. При API-интеграции создаётся/выбирается настоящий адрес пользователя.
-      items: cart.items.map(item => ({ menu_item_id: item.meal.menuItemId, quantity: item.quantity })),
-      comment: comment.trim() || null,
-    };
-    if (request.items.length === 0) { setOrderError('Корзина пуста'); setConfirmOpen(false); return; }
-    placeOrder(request, `${city.trim()}, ${street.trim()}, ${house.trim()}${apartment.trim() ? `, кв. ${apartment.trim()}` : ''}`);
-    setConfirmOpen(false);
-    router.replace('/orders');
+  const available = day.state === 'ready' && cart.items.every(item => day.meals.some(meal => meal.menuItemId === item.meal.menuItemId));
+  const errors = deliveryErrors(draft);
+  const change = (key: keyof DeliveryDraft, value: string) => setDeliveryDraft({ ...draft, [key]: value });
+  const go = (value: Step) => { Keyboard.dismiss(); setStep(value); setOrderError(''); scroll.current?.scrollTo({ y: 0, animated: false }); };
+  const leave = useCallback(() => {
+    if (saving) return;
+    if (completed) router.dismissTo('/orders');
+    else if (step === 'review') setStep('delivery');
+    else if (step === 'delivery') setStep('cart');
+    else if (router.canGoBack()) router.back();
+    else router.replace('/menu');
+  }, [saving, completed, step, router]);
+  useFocusEffect(useCallback(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => { leave(); return true; });
+    return () => subscription.remove();
+  }, [leave]));
+  const review = () => {
+    setShowErrors(true);
+    if (Object.keys(errors).length) { scroll.current?.scrollTo({ y: 0, animated: true }); return; }
+    if (!available) { setOrderError('Меню изменилось. Вернитесь в корзину и выберите доступные блюда.'); return; }
+    go('review');
+  };
+  const submit = async () => {
+    if (submitLock.current) return;
+    submitLock.current = true;
+    setSaving(true); setOrderError('');
+    try {
+      if (getDemoDay(deliveryDate).state !== 'ready' || !available) throw new Error('Доставка на эту дату недоступна. Выберите другую дату в меню.');
+      const request = orderRequest(deliveryDate, draft, cart.items);
+      const result = await placeOrder(request, addressText(draft));
+      setCompleted(result);
+    } catch (error) { setOrderError(error instanceof Error ? error.message : 'Не удалось сохранить заказ. Корзина сохранена — попробуйте ещё раз.'); }
+    finally { submitLock.current = false; setSaving(false); }
   };
 
+  if (completed) return <View style={styles.root}>
+    <Stack.Screen options={{ gestureEnabled: false }} />
+    <ScrollView contentContainerStyle={extra.successContent}>
+      <Animated.View entering={FadeInDown.duration(280)} style={extra.successHero}>
+        <View style={extra.successIcon}><Ionicons name="checkmark" size={42} color={colors.primary} /></View>
+        <Text style={extra.successTitle}>Заказ сохранён</Text>
+        <Text style={extra.orderNumber}>№ {completed.id}</Text>
+        <Text style={extra.centered}>Он уже в истории заказов. Все детали — ниже.</Text>
+      </Animated.View>
+      <View style={extra.notice}><Ionicons name="information-circle-outline" size={21} color={colors.primary} /><Text style={extra.noticeText}>Тестовый заказ: столовая его не получила, оплата не списывалась.</Text></View>
+      <View style={extra.summaryCard}><Fact icon="calendar-outline" title="Дата доставки" value={formatDeliveryDate(completed.request.delivery_date)} /><Fact icon="time-outline" title="Время" value={completed.request.delivery_time.slice(0, 5)} /><Fact icon="location-outline" title="Адрес" value={completed.addressText} />{!!completed.request.comment && <Fact icon="chatbubble-outline" title="Комментарий" value={completed.request.comment} />}</View>
+      <View style={extra.summaryCard}><Text style={extra.blockTitle}>Состав заказа</Text>{completed.items.map((item, index) => <View key={index} style={extra.reviewRow}><Text style={extra.reviewName}>{item.name} × {item.quantity}</Text><Text style={extra.reviewPrice}>{money(item.price * item.quantity)}</Text></View>)}<View style={extra.divider} /><View style={extra.reviewRow}><Text style={styles.totalLabel}>Итого</Text><Text style={styles.total}>{money(completed.total)}</Text></View></View>
+    </ScrollView>
+    <View style={styles.footer}><Pressable onPress={() => router.dismissTo('/orders')} accessibilityRole="button" style={styles.primary}><Text style={styles.primaryText}>Мои заказы</Text><Ionicons name="arrow-forward" size={20} color="white" /></Pressable><Pressable onPress={() => router.dismissTo('/menu')} accessibilityRole="button" style={styles.cancel}><Text style={styles.cancelText}>Вернуться в меню</Text></Pressable></View>
+  </View>;
+
   return <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-    <View style={styles.header}><Pressable onPress={() => step === 'delivery' ? setStep('cart') : router.back()} accessibilityRole="button" accessibilityLabel="Назад" style={styles.back}><Ionicons name="arrow-back" size={22} color={colors.ink} /></Pressable><Text style={styles.headerTitle}>{step === 'cart' ? 'Корзина' : 'Оформление'}</Text>{step === 'cart' ? <Pressable onPress={() => setClearOpen(true)} accessibilityRole="button" style={styles.clear}><Text style={styles.clearText}>Очистить</Text></Pressable> : <View style={styles.back} />}</View>
-    <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-      {step === 'delivery' && <View style={styles.progress}><View style={[styles.progressPart, styles.progressActive]} /><View style={[styles.progressPart, styles.progressActive]} /></View>}
-      {step === 'cart' ? <>
-        <View style={styles.dateCard}><Ionicons name="calendar-outline" size={23} color={colors.primary} /><View><Text style={styles.muted}>Доставка</Text><Text style={styles.dateText}>{formatDeliveryDate(deliveryDate)}</Text></View></View>
-        {cart.items.length ? cart.items.map(item => <View key={item.meal.menuItemId} style={styles.cartRow}><Image source={item.meal.image} style={styles.food} /><View style={styles.cartText}><Text style={styles.itemName}>{item.meal.name}</Text><Text style={styles.muted}>{item.meal.weight}</Text><Text style={styles.itemPrice}>{item.meal.price * item.quantity} ₽</Text></View><View style={styles.counter}><Pressable onPress={() => cart.decrease(item.meal)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Уменьшить ${item.meal.name}`} style={styles.counterButton}><Ionicons name="remove" size={17} color={colors.primary} /></Pressable><Text style={styles.count}>{item.quantity}</Text><Pressable onPress={() => cart.add(item.meal)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Увеличить ${item.meal.name}`} style={styles.counterButton}><Ionicons name="add" size={17} color={colors.primary} /></Pressable></View></View>) : <View style={styles.empty}><Ionicons name="basket-outline" size={35} color={colors.primary} /><Text style={styles.emptyTitle}>Корзина пуста</Text><Text style={styles.muted}>Добавьте комплекс или блюда из меню.</Text><Pressable onPress={() => router.replace('/menu')} style={styles.emptyLink}><Text style={styles.emptyLinkText}>Перейти в меню</Text></Pressable></View>}
-        {!!cart.count && <><Text style={styles.commentTitle}>Комментарий к заказу</Text><TextInput multiline value={comment} onChangeText={setComment} maxLength={2000} placeholder="Например, как найти вход" placeholderTextColor={colors.muted} style={[styles.comment, { fontFamily: fontFamily.regular }]} accessibilityLabel="Комментарий к заказу" /></>}
-      </> : <>
-        <Text style={styles.demo}>Демо-оформление: заказ не отправляется в столовую.</Text>
-        <Text style={styles.sectionTitle}>Куда доставить?</Text><Text style={styles.helper}>Адрес нужен для настоящего заказа. Сейчас он используется только в демо.</Text>
-        <View style={styles.form}><Field label="Город" value={city} onChange={setCity} placeholder="Например, Москва" error={showErrors && !city.trim()} /><Field label="Улица" value={street} onChange={setStreet} placeholder="Название улицы" error={showErrors && !street.trim()} /><View style={styles.formRow}><View style={styles.fieldHalf}><Field label="Дом" value={house} onChange={setHouse} placeholder="12" error={showErrors && !house.trim()} /></View><View style={styles.fieldHalf}><Field label="Квартира" value={apartment} onChange={setApartment} placeholder="Необязательно" /></View></View></View>
-        <Text style={styles.sectionTitle}>Время доставки</Text><Text style={styles.helper}>Доступные интервалы здесь демонстрационные.</Text><View style={styles.slots}>{day.state === 'ready' ? demoSlots.map(value => <Pressable key={value} onPress={() => setSlot(value)} accessibilityRole="button" accessibilityState={{ selected: slot === value }} style={[styles.slot, slot === value && styles.slotActive]}><Text style={[styles.slotText, slot === value && styles.slotTextActive]}>{value}</Text></Pressable>) : <Text style={styles.error}>На эту дату нет доступных слотов. Выберите другой день в меню.</Text>}</View>{showErrors && !slot && day.state === 'ready' && <Text style={styles.error}>Выберите время доставки</Text>}
-        <View style={styles.summary}><Text style={styles.muted}>{cart.count} позиций · {formatDeliveryDate(deliveryDate)}</Text><Text style={styles.total}>{cart.total} ₽</Text></View>
-        {!!orderError && <Text style={styles.error}>{orderError}</Text>}
+    <Stack.Screen options={{ gestureEnabled: step === 'cart' && !saving }} />
+    <View style={styles.header}><Pressable onPress={leave} disabled={saving} accessibilityRole="button" accessibilityLabel="Назад" style={styles.back}><Ionicons name="arrow-back" size={22} color={colors.ink} /></Pressable><Text style={styles.headerTitle}>{step === 'cart' ? 'Корзина' : step === 'delivery' ? 'Доставка' : 'Проверка заказа'}</Text>{step === 'cart' && cart.count > 0 ? <Pressable onPress={() => setClearOpen(true)} accessibilityRole="button" style={styles.clear}><Text style={styles.clearText}>Очистить</Text></Pressable> : <View style={styles.back} />}</View>
+    {!!cart.count && <View style={extra.steps}>{(['Корзина', 'Доставка', 'Проверка'] as const).map((label, index) => <View key={label} style={extra.step}><View style={[extra.stepLine, index <= ['cart', 'delivery', 'review'].indexOf(step) && styles.progressActive]} /><Text style={[extra.stepText, index === ['cart', 'delivery', 'review'].indexOf(step) && extra.stepSelected]}>{label}</Text></View>)}</View>}
+    <ScrollView ref={scroll} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      {!cart.count ? <View style={extra.empty}><View style={extra.successIcon}><Ionicons name="basket-outline" size={36} color={colors.primary} /></View><Text style={styles.emptyTitle}>Пока ничего не выбрали</Text><Text style={extra.centered}>Соберите обед из любимых блюд или выберите готовый комплекс.</Text><Pressable onPress={() => router.dismissTo('/menu')} accessibilityRole="button" style={[styles.primary, extra.fullButton]}><Text style={styles.primaryText}>Открыть меню</Text><Ionicons name="arrow-forward" size={19} color="white" /></Pressable></View> : <>
+      {step === 'cart' && <>
+        <View style={[styles.dateCard, extra.dateMargin]}><Ionicons name="calendar-outline" size={23} color={colors.primary} /><View style={extra.flex}><Text style={styles.muted}>Доставка</Text><Text style={styles.dateText}>{formatDeliveryDate(deliveryDate)}</Text></View></View>
+        {!available && <View style={extra.notice}><Text style={styles.error}>Некоторые блюда или дата больше недоступны. Выберите меню на другую дату.</Text><Pressable onPress={() => router.dismissTo('/menu')} style={styles.cancel}><Text style={styles.cancelText}>В меню</Text></Pressable></View>}
+        {cart.items.map(item => <View key={item.meal.menuItemId} style={extra.cartCard}>
+          <View style={extra.cartTop}><Image source={item.meal.image} style={styles.food} /><View style={extra.flex}><Text style={styles.itemName}>{item.meal.name}</Text><Text style={styles.muted}>{item.meal.weight}</Text><Text style={styles.muted}>{money(item.meal.price)} / шт.</Text></View></View>
+          <View style={extra.cartBottom}><Text style={extra.lineTotal}>{money(item.meal.price * item.quantity)}</Text><View style={extra.counter}>
+            <Pressable onPress={() => cart.decrease(item.meal)} accessibilityRole="button" accessibilityLabel={item.quantity === 1 ? `Удалить ${item.meal.name}` : `Уменьшить ${item.meal.name}`} style={extra.counterButton}><Ionicons name={item.quantity === 1 ? 'trash-outline' : 'remove'} size={19} color={colors.primary} /></Pressable>
+            <Text style={styles.count} accessibilityLiveRegion="polite">{item.quantity}</Text>
+            <Pressable onPress={() => cart.add(item.meal)} disabled={item.quantity >= 10} accessibilityRole="button" accessibilityLabel={`Увеличить ${item.meal.name}`} accessibilityState={{ disabled: item.quantity >= 10 }} style={[extra.counterButton, item.quantity >= 10 && extra.disabled]}><Ionicons name="add" size={19} color={colors.primary} /></Pressable>
+          </View></View>
+        </View>)}
+        <Pressable onPress={() => router.dismissTo('/menu')} accessibilityRole="button" style={styles.cancel}><Text style={styles.cancelText}>+ Добавить ещё блюда</Text></Pressable>
+        <Text style={styles.commentTitle}>Комментарий к заказу</Text><TextInput multiline value={draft.comment} onChangeText={value => change('comment', value)} maxLength={2000} placeholder="Например, как найти вход" placeholderTextColor={colors.muted} style={[styles.comment, { fontFamily: fontFamily.regular }]} accessibilityLabel="Комментарий к заказу" />
+      </>}
+      {step === 'delivery' && <>
+        <View style={extra.summaryCard}>
+          {auth.status === 'ready'
+            ? <Fact icon="person-outline" title="Аккаунт" value={auth.account.first_name} />
+            : <Pressable onPress={() => { Keyboard.dismiss(); router.push('/sign-in'); }}
+              accessibilityRole="button" style={extra.fact}>
+              <View style={extra.factIcon}><Ionicons name="person-outline" size={21} color={colors.primary} /></View>
+              <Text style={[extra.factValue, extra.flex]}>Войти или создать аккаунт</Text>
+              <Ionicons name="chevron-forward" size={19} color={colors.primary} />
+            </Pressable>}
+        </View>
+        <Text style={styles.sectionTitle}>Куда привезти обед?</Text><Text style={styles.helper}>Город, улица и дом — обязательные поля.</Text>
+        <View style={styles.form}><Field label="Город" value={draft.city} onChange={value => change('city', value)} placeholder="Город доставки" maxLength={100} error={showErrors ? errors.city : undefined} /><Field label="Улица" value={draft.street} onChange={value => change('street', value)} placeholder="Название улицы" maxLength={200} error={showErrors ? errors.street : undefined} />
+          <View style={styles.formRow}><View style={styles.fieldHalf}><Field label="Дом" value={draft.house} onChange={value => change('house', value)} placeholder="12А" error={showErrors ? errors.house : undefined} /></View><View style={styles.fieldHalf}><Field label="Квартира / офис" value={draft.apartment} onChange={value => change('apartment', value)} placeholder="Необязательно" /></View></View>
+          <View style={styles.formRow}><View style={styles.fieldHalf}><Field label="Подъезд" value={draft.entrance} onChange={value => change('entrance', value)} placeholder="Необязательно" /></View><View style={styles.fieldHalf}><Field label="Этаж" value={draft.floor} onChange={value => change('floor', value)} placeholder="Необязательно" /></View></View>
+        </View>
+        <Text style={styles.sectionTitle}>Когда доставить?</Text><Text style={styles.helper}>{formatDeliveryDate(deliveryDate)}</Text><View style={styles.slots}>{deliverySlots.map(value => <Pressable key={value} onPress={() => change('slot', value)} accessibilityRole="button" accessibilityState={{ selected: draft.slot === value }} style={[styles.slot, extra.flex, draft.slot === value && styles.slotActive]}><Text style={[styles.slotText, draft.slot === value && styles.slotTextActive]}>{value}</Text></Pressable>)}</View>{showErrors && errors.slot && <Text accessibilityRole="alert" style={styles.error}>{errors.slot}</Text>}
+      </>}
+      {step === 'review' && <>
+        <View style={extra.sectionHeading}><Text style={extra.blockTitle}>Доставка</Text><Pressable disabled={saving} onPress={() => go('delivery')} style={styles.cancel}><Text style={styles.cancelText}>Изменить</Text></Pressable></View>
+        <View style={extra.summaryCard}><Fact icon="calendar-outline" title="Дата и время" value={`${formatDeliveryDate(deliveryDate)}, ${draft.slot}`} /><Fact icon="location-outline" title="Адрес" value={addressText(draft)} />{!!draft.comment.trim() && <Fact icon="chatbubble-outline" title="Комментарий" value={draft.comment.trim()} />}</View>
+        <View style={extra.sectionHeading}><Text style={extra.blockTitle}>Ваш заказ</Text><Pressable disabled={saving} onPress={() => go('cart')} style={styles.cancel}><Text style={styles.cancelText}>Изменить</Text></Pressable></View>
+        <View style={extra.summaryCard}>{cart.items.map(item => <View key={item.meal.menuItemId} style={extra.reviewRow}><Image source={item.meal.image} style={extra.reviewImage} /><View style={extra.flex}><Text style={styles.itemName}>{item.meal.name}</Text><Text style={styles.muted}>{item.quantity} × {money(item.meal.price)}</Text></View><Text style={extra.reviewPrice}>{money(item.quantity * item.meal.price)}</Text></View>)}<View style={extra.divider} /><View style={extra.reviewRow}><Text style={styles.totalLabel}>Итого</Text><Text style={styles.total}>{money(cart.total)}</Text></View></View>
+        <View style={extra.notice}><Ionicons name="information-circle-outline" size={22} color={colors.primary} /><Text style={extra.noticeText}>Тестовый режим. Сохраним заказ на этом устройстве. В столовую он не отправится, оплаты не будет.</Text></View>
+      </>}
+      {!!orderError && <Text accessibilityRole="alert" style={extra.errorBox}>{orderError}</Text>}
+      {!!ordersError && <View style={extra.notice}><Text style={styles.error}>{ordersError}</Text><Pressable onPress={() => void retryOrders()} style={styles.cancel}><Text style={styles.cancelText}>Повторить загрузку</Text></Pressable></View>}
       </>}
     </ScrollView>
-    {cart.count > 0 && <View style={styles.footer}>{step === 'cart' && <View style={styles.totalRow}><Text style={styles.totalLabel}>Итого</Text><Text style={styles.total}>{cart.total} ₽</Text></View>}<Pressable onPress={() => step === 'cart' ? setStep('delivery') : openConfirm()} style={styles.primary} accessibilityRole="button"><Text style={styles.primaryText}>{step === 'cart' ? 'Оформить заказ' : 'Проверить заказ'}</Text><Ionicons name="arrow-forward" size={19} color="white" /></Pressable></View>}
-    <AppModal visible={clearOpen} onClose={() => setClearOpen(false)} variant="dialog"><View style={styles.confirm}><Ionicons name="trash-outline" size={32} color={colors.primary} /><Text style={styles.confirmTitle}>Очистить корзину?</Text><Text style={styles.confirmHint}>Все добавленные блюда будут удалены.</Text><Pressable onPress={() => { cart.clear(); setClearOpen(false); }} style={styles.primary}><Text style={styles.primaryText}>Очистить</Text></Pressable><Pressable onPress={() => setClearOpen(false)} style={styles.cancel}><Text style={styles.cancelText}>Оставить заказ</Text></Pressable></View></AppModal>
-    <AppModal visible={confirmOpen} onClose={() => setConfirmOpen(false)} variant="dialog"><View style={styles.confirm}><Ionicons name="checkmark-circle-outline" size={34} color={colors.primary} /><Text style={styles.confirmTitle}>Всё верно?</Text><Text style={styles.confirmBody}>{formatDeliveryDate(deliveryDate)}, {slot}{'\n'}{city}, {street}, {house}{'\n'}{cart.count} позиций · {cart.total} ₽</Text><Text style={styles.confirmHint}>Это демо-заказ. Он не отправится на сервер.</Text><Pressable onPress={submit} style={styles.primary}><Text style={styles.primaryText}>Создать демо-заказ</Text></Pressable><Pressable onPress={() => setConfirmOpen(false)} style={styles.cancel}><Text style={styles.cancelText}>Вернуться к оформлению</Text></Pressable></View></AppModal>
+    {cart.count > 0 && <View style={styles.footer}><View style={styles.totalRow}><Text style={styles.totalLabel}>Итого</Text><Text style={styles.total}>{money(cart.total)}</Text></View><Pressable disabled={saving || !available || (step === 'review' && !ordersReady)} accessibilityRole="button" accessibilityState={{ disabled: saving || !available || (step === 'review' && !ordersReady), busy: saving }} onPress={() => step === 'cart' ? go('delivery') : step === 'delivery' ? review() : void submit()} style={[styles.primary, (saving || !available || (step === 'review' && !ordersReady)) && extra.disabled]}><Text style={styles.primaryText}>{saving ? 'Сохраняем заказ…' : step === 'cart' ? 'К оформлению' : step === 'delivery' ? 'Проверить заказ' : 'Подтвердить заказ'}</Text>{saving ? <ActivityIndicator color="white" /> : <Ionicons name="arrow-forward" size={19} color="white" />}</Pressable></View>}
+    <AppModal visible={clearOpen} onClose={() => setClearOpen(false)} variant="dialog"><View style={styles.confirm}><Ionicons name="trash-outline" size={32} color={colors.primary} /><Text style={styles.confirmTitle}>Очистить корзину?</Text><Text style={styles.confirmHint}>Все добавленные блюда будут удалены.</Text><Pressable onPress={() => { cart.clear(); setClearOpen(false); }} accessibilityRole="button" style={styles.primary}><Text style={styles.primaryText}>Очистить корзину</Text></Pressable><Pressable onPress={() => setClearOpen(false)} accessibilityRole="button" style={styles.cancel}><Text style={styles.cancelText}>Оставить блюда</Text></Pressable></View></AppModal>
   </KeyboardAvoidingView>;
 }
-
-function Field({ label, value, onChange, placeholder, error = false }: { label: string; value: string; onChange: (value: string) => void; placeholder: string; error?: boolean }) {
-  return <View style={styles.field}><Text style={styles.fieldLabel}>{label}</Text><TextInput value={value} onChangeText={onChange} placeholder={placeholder} placeholderTextColor={colors.muted} style={[styles.input, error && styles.inputError, { fontFamily: fontFamily.regular }]} accessibilityLabel={label} />{error && <Text style={styles.error}>Обязательное поле</Text>}</View>;
+function Field({ label, value, onChange, placeholder, error, maxLength = 30 }: { label: string; value: string; onChange: (value: string) => void; placeholder: string; error?: string; maxLength?: number }) {
+  return <View style={styles.field}><Text style={styles.fieldLabel}>{label}</Text><TextInput value={value} onChangeText={onChange} placeholder={placeholder} maxLength={maxLength} placeholderTextColor={colors.muted} style={[styles.input, !!error && styles.inputError, { fontFamily: fontFamily.regular }]} accessibilityLabel={label} />{!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}</View>;
 }
+function Fact({ icon, title, value }: { icon: keyof typeof Ionicons.glyphMap; title: string; value: string }) {
+  return <View style={extra.fact}><View style={extra.factIcon}><Ionicons name={icon} size={21} color={colors.primary} /></View><View style={extra.flex}><Text style={styles.muted}>{title}</Text><Text style={extra.factValue}>{value}</Text></View></View>;
+}
+const extra = StyleSheet.create({
+  flex: { flex: 1 }, disabled: { opacity: .45 }, dateMargin: { marginBottom: 16 },
+  steps: { flexDirection: 'row', paddingHorizontal: 20, gap: 10, paddingTop: 8, paddingBottom: 20 }, step: { flex: 1, gap: 7 }, stepLine: { height: 3, borderRadius: 2, backgroundColor: colors.line }, stepText: { fontSize: 11, color: colors.muted }, stepSelected: { color: colors.primary, fontWeight: '700' },
+  cartCard: { backgroundColor: colors.surface, borderRadius: 20, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: colors.line }, cartTop: { flexDirection: 'row', gap: 14, alignItems: 'center' }, cartBottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }, lineTotal: { fontSize: 18, fontWeight: '700', color: colors.ink }, counter: { flexDirection: 'row', alignItems: 'center', gap: 12 }, counterButton: { width: 48, height: 48, borderRadius: 16, backgroundColor: colors.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  sectionHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }, blockTitle: { color: colors.ink, fontSize: 18, fontWeight: '700' }, summaryCard: { backgroundColor: colors.surface, borderRadius: 20, padding: 16, marginBottom: 14, borderWidth: 1, borderColor: colors.line }, fact: { flexDirection: 'row', gap: 12, paddingVertical: 9, alignItems: 'center' }, factIcon: { width: 42, height: 42, borderRadius: 14, backgroundColor: colors.accentSoft, alignItems: 'center', justifyContent: 'center' }, factValue: { color: colors.ink, fontSize: 14, lineHeight: 21, marginTop: 3, fontWeight: '600' }, reviewRow: { flexDirection: 'row', gap: 10, alignItems: 'center', paddingVertical: 10 }, reviewImage: { width: 48, height: 48, borderRadius: 12 }, reviewName: { flex: 1, fontSize: 14, color: colors.ink, lineHeight: 21 }, reviewPrice: { fontSize: 14, fontWeight: '700', color: colors.ink }, divider: { height: 1, backgroundColor: colors.line, marginVertical: 8 },
+  notice: { padding: 15, borderRadius: 16, backgroundColor: colors.accentSoft, flexDirection: 'row', gap: 10, marginBottom: 16, flexWrap: 'wrap' }, noticeText: { flex: 1, fontSize: 12, lineHeight: 18, color: colors.primary }, errorBox: { color: '#B54A4A', padding: 14, backgroundColor: '#FFF1EF', borderRadius: 12, marginVertical: 12, lineHeight: 20 },
+  empty: { alignItems: 'center', paddingVertical: 60, gap: 12 }, fullButton: { alignSelf: 'stretch', marginTop: 12 }, centered: { color: colors.muted, fontSize: 14, lineHeight: 21, textAlign: 'center' }, successContent: { padding: 20, paddingBottom: 30 }, successHero: { alignItems: 'center', paddingVertical: 25, gap: 10 }, successIcon: { width: 84, height: 84, borderRadius: 42, backgroundColor: colors.accentSoft, alignItems: 'center', justifyContent: 'center', marginBottom: 8 }, successTitle: { fontSize: 29, fontWeight: '700', color: colors.ink, textAlign: 'center' }, orderNumber: { fontSize: 14, color: colors.primary, fontWeight: '600' },
+});
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.canvas }, header: { height: 56, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, back: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }, headerTitle: { color: colors.ink, fontSize: 18, fontWeight: '800' }, clear: { minWidth: 54, minHeight: 44, justifyContent: 'center', alignItems: 'flex-end' }, clearText: { color: colors.primary, fontSize: 12, fontWeight: '800' }, content: { paddingHorizontal: 20, paddingBottom: 35 }, progress: { flexDirection: 'row', gap: 7, marginTop: 8, marginBottom: 12 }, progressPart: { flex: 1, height: 4, borderRadius: 2, backgroundColor: colors.line }, progressActive: { backgroundColor: colors.primary }, demo: { color: colors.muted, fontSize: 12, lineHeight: 17, marginBottom: 18 },

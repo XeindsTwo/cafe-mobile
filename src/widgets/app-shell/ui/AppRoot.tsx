@@ -1,7 +1,8 @@
+import Animated, { FadeInDown, FadeOut, LinearTransition } from 'react-native-reanimated';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Animated, Image, ImageSourcePropType, Pressable, StyleSheet, View } from 'react-native';
+import { Image, ImageSourcePropType, Pressable, StyleSheet, View } from 'react-native';
 import { Text } from '../../../shared/ui/typography';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Meal } from '../../../entities/meal/model/types';
@@ -25,7 +26,7 @@ export function AppRoot({ tab }: { tab: Tab }) {
   const [selected, setSelected] = useState<{ kind: 'meal' | 'set'; id: string } | null>(null);
   const [detailVisible, setDetailVisible] = useState(false);
 
-  useEffect(() => () => { toastTimers.current.forEach(timer => clearTimeout(timer)); }, []);
+  useEffect(() => { const timers = toastTimers.current; return () => { timers.forEach(clearTimeout); }; }, []);
 
   const removeToast = (id: number) => {
     const timer = toastTimers.current.get(id);
@@ -45,17 +46,16 @@ export function AppRoot({ tab }: { tab: Tab }) {
   };
   const openMeal = (meal: Meal) => { setSelected({ kind: 'meal', id: meal.id }); setDetailVisible(true); };
   const openSet = (id: number) => { setSelected({ kind: 'set', id: String(id) }); setDetailVisible(true); };
-  const openMenu = (view: 'sets' | 'dishes') => { setMenuView(view); router.replace('/menu'); };
+  const openMenu = (view: 'sets' | 'dishes') => { setMenuView(view); router.navigate('/menu'); };
 
   return <SafeAreaView style={styles.safe}>
     <View style={styles.main}>
-      {tab === 'home' && <HomePage onOpen={openMeal} onAdd={add} onProfile={() => router.replace('/profile')} onMenu={() => openMenu('dishes')} onSets={() => openMenu('sets')} />}
-      {tab === 'menu' && <MenuExperience onOpen={openMeal} onOpenSet={openSet} onAdd={add} onAddSet={showAdded} onProfile={() => router.replace('/profile')} />}
+      {tab === 'home' && <HomePage onOpen={openMeal} onAdd={add} onProfile={() => router.navigate('/profile')} onMenu={() => openMenu('dishes')} onSets={() => openMenu('sets')} />}
+      {tab === 'menu' && <MenuExperience onOpen={openMeal} onOpenSet={openSet} onAdd={add} onAddSet={showAdded} onProfile={() => router.navigate('/profile')} />}
       {tab === 'orders' && <OrdersPage />}
       {tab === 'profile' && <ProfilePage />}
     </View>
-    <View style={styles.nav}>{([['home', 'home-outline', 'Главная'], ['menu', 'restaurant-outline', 'Меню'], ['cart', 'basket-outline', 'Корзина'], ['orders', 'receipt-outline', 'Заказы'], ['profile', 'person-outline', 'Профиль']] as const).map(([key, icon, label]) => <Pressable key={key} accessibilityRole="tab" accessibilityState={{ selected: tab === key }} onPress={() => { if (key === 'cart') router.push('/checkout'); else if (tab !== key) router.replace(key === 'home' ? '/' : `/${key}`); }} style={styles.navItem}><View><Ionicons name={tab === key && key === 'home' ? 'home' : icon} size={21} color={tab === key ? colors.primary : colors.muted} />{key === 'cart' && cart.count > 0 && <View style={styles.cartBadge}><Text style={styles.cartBadgeText}>{Math.min(cart.count, 99)}</Text></View>}</View><Text style={[styles.navLabel, tab === key && styles.navActive]}>{label}</Text></Pressable>)}</View>
-    {tab === 'home' && cart.count > 0 && !detailVisible && <View style={styles.cartPanel}><View style={styles.cartPanelIcon}><Ionicons name="basket-outline" size={20} color={colors.primary} /></View><Pressable onPress={() => router.push('/checkout')} accessibilityRole="button" accessibilityLabel="Открыть корзину" style={styles.cartPanelButton}><Text style={styles.cartPanelButtonText}>В корзину</Text><Ionicons name="arrow-forward" size={15} color="white" /></Pressable></View>}
+    <View style={styles.nav}>{([['home', 'home-outline', 'Главная'], ['menu', 'restaurant-outline', 'Меню'], ['cart', 'basket-outline', 'Корзина'], ['orders', 'receipt-outline', 'Заказы'], ['profile', 'person-outline', 'Профиль']] as const).map(([key, icon, label]) => <Pressable key={key} accessibilityRole="tab" accessibilityState={{ selected: tab === key }} onPress={() => { if (key === 'cart') router.push('/checkout'); else if (tab !== key) router.navigate(key === 'home' ? '/' : `/${key}`); }} style={styles.navItem}><View><Ionicons name={tab === key && key === 'home' ? 'home' : icon} size={21} color={tab === key ? colors.primary : colors.muted} />{key === 'cart' && tab !== 'home' && cart.count > 0 && <View style={styles.cartBadge}><Text style={styles.cartBadgeText}>{Math.min(cart.count, 99)}</Text></View>}</View><Text style={[styles.navLabel, tab === key && styles.navActive]}>{label}</Text></Pressable>)}</View>
     {toasts.length > 0 && <View pointerEvents="box-none" style={styles.toastLayer}><View style={styles.toastStack}>{toasts.map(item => <ToastNotice key={item.id} image={item.image} onPress={() => { removeToast(item.id); router.push('/checkout'); }} />)}</View></View>}
     <AppModal visible={detailVisible} onClose={() => setDetailVisible(false)} handleOverlay>{selected && <DetailPage key={`${selected.kind}:${selected.id}`} {...selected} onClose={() => setDetailVisible(false)} onAdded={image => setTimeout(() => showAdded(image), 400)} />}</AppModal>
   </SafeAreaView>;
@@ -70,7 +70,5 @@ const styles = StyleSheet.create({
 });
 
 function ToastNotice({ image, onPress }: { image: ImageSourcePropType; onPress: () => void }) {
-  const progress = useRef(new Animated.Value(0)).current;
-  useEffect(() => { Animated.spring(progress, { toValue: 1, useNativeDriver: true, damping: 16, stiffness: 180 }).start(); }, [progress]);
-  return <Animated.View style={{ opacity: progress, transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [-14, 0] }) }, { scale: progress.interpolate({ inputRange: [0, 1], outputRange: [.94, 1] }) }] }}><Pressable accessibilityRole="button" accessibilityLabel="Добавлено в корзину. Открыть корзину" onPress={onPress} style={styles.toast}><Image source={image} style={styles.toastImage} /><Text style={styles.toastText}>Добавлено{`\n`}в корзину</Text></Pressable></Animated.View>;
+  return <Animated.View layout={LinearTransition.duration(240)} entering={FadeInDown.duration(240)} exiting={FadeOut.duration(180)}><Pressable accessibilityRole="button" accessibilityLabel="Добавлено в корзину. Открыть корзину" onPress={onPress} style={styles.toast}><Image source={image} style={styles.toastImage} /><Text style={styles.toastText}>Добавлено{`\n`}в корзину</Text></Pressable></Animated.View>;
 }

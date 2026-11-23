@@ -1,4 +1,4 @@
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Text } from '../../../shared/ui/typography';
 import { Ionicons } from '@expo/vector-icons';
 import { formatDeliveryDate } from '../../../entities/meal/model/demoDay';
@@ -6,12 +6,12 @@ import { colors } from '../../../shared/ui/theme';
 import { useSession } from '../../../widgets/app-shell/model/Session';
 
 export function OrdersPage() {
-  const { orders } = useSession();
+  const { orders, ordersReady, ordersError, retryOrders } = useSession();
   return <ScrollView style={styles.root} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-    <Text style={styles.title}>Заказы</Text><Text style={styles.caption}>Демо-заказы хранятся только до закрытия приложения</Text>
-    {orders.length ? orders.map(order => <View key={order.id} style={styles.card}>
-      <View style={styles.top}><View style={styles.statusIcon}><Ionicons name="checkmark" size={20} color={colors.primary} /></View><View style={styles.topCopy}><Text style={styles.orderName}>Заказ от {order.createdAt}</Text><Text style={styles.status}>Демо-заказ создан</Text></View><Text style={styles.price}>{order.total} ₽</Text></View>
-      <View style={styles.line} /><View style={styles.fact}><Ionicons name="calendar-outline" size={20} color={colors.primary} /><Text style={styles.factText}>{formatDeliveryDate(order.request.delivery_date)}, {order.request.delivery_time.slice(0, 5)}</Text></View>
+    <Text style={styles.title}>Заказы</Text><Text style={styles.caption}>Заказы сохранены на этом устройстве</Text>
+    {ordersError ? <View style={styles.empty}><Text style={styles.emptyBody}>{ordersError}</Text><Pressable onPress={() => void retryOrders()} style={{ minHeight: 48, justifyContent: 'center' }}><Text style={styles.status}>Попробовать ещё раз</Text></Pressable></View> : !ordersReady ? <ActivityIndicator accessibilityLabel="Загрузка заказов" color={colors.primary} /> : orders.length ? orders.map(order => <View key={order.id} style={styles.card}>
+      <View style={styles.top}><View style={styles.statusIcon}><Ionicons name="checkmark" size={20} color={colors.primary} /></View><View style={styles.topCopy}><Text style={styles.orderName}>Заказ № {order.id}</Text><Text style={styles.status}>Тестовый · сохранён</Text></View><Text style={styles.price}>{order.total} ₽</Text></View>
+      <Text style={styles.comment}>{new Date(order.createdAt).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}</Text><View style={styles.line} /><View style={styles.fact}><Ionicons name="calendar-outline" size={20} color={colors.primary} /><Text style={styles.factText}>{formatDeliveryDate(order.request.delivery_date)}, {order.request.delivery_time.slice(0, 5)}</Text></View>
       <View style={styles.fact}><Ionicons name="location-outline" size={20} color={colors.primary} /><Text style={styles.factText}>{order.addressText}</Text></View>
       <Text style={styles.itemsTitle}>Состав заказа</Text>{order.items.map(item => <View key={item.name} style={styles.item}><Text style={styles.itemName}>{item.name} × {item.quantity}</Text><Text style={styles.itemPrice}>{item.price * item.quantity} ₽</Text></View>)}
       {!!order.request.comment && <Text style={styles.comment}>Комментарий: {order.request.comment}</Text>}

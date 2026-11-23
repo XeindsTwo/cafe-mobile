@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { fontFamily, Text } from '../../../shared/ui/typography';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,7 +9,7 @@ import { AppModal } from '../../../shared/ui/modal/AppModal';
 import { HomeMealsSkeleton } from '../../../shared/ui/skeleton/ContentSkeleton';
 import { useSession } from '../../../widgets/app-shell/model/Session';
 import { demoDates, getDemoDay } from '../../../entities/meal/model/demoDay';
-import { hasLoadedContent, markContentLoaded } from '../../../shared/lib/contentCache';
+import { useContentLoading } from '../../../shared/lib/contentCache';
 
 type Props = { onProfile: () => void; onMenu: () => void; onSets: () => void; onOpen: (meal: Meal) => void; onAdd: (meal: Meal) => void };
 type Feature = 'plans' | null;
@@ -24,14 +24,7 @@ export function HomePage({ onProfile, onMenu, onSets, onOpen, onAdd }: Props) {
   const [feature, setFeature] = useState<Feature>(null);
   const [featureOpen, setFeatureOpen] = useState(false);
   const day = getDemoDay(deliveryDate);
-  const homeContentKey = `home:${deliveryDate}`;
-  const [mealsLoading, setMealsLoading] = useState(() => !hasLoadedContent(homeContentKey));
-  useEffect(() => {
-    if (hasLoadedContent(homeContentKey)) { setMealsLoading(false); return; }
-    setMealsLoading(true);
-    const timer = setTimeout(() => { markContentLoaded(homeContentKey); setMealsLoading(false); }, 480);
-    return () => clearTimeout(timer);
-  }, [homeContentKey]);
+  const mealsLoading = useContentLoading(`day:${deliveryDate}`);
   const openFeature = (value: Exclude<Feature, null>) => { setFeature(value); setFeatureOpen(true); };
   const chooseDate = (date: string) => {
     setDatesOpen(false);

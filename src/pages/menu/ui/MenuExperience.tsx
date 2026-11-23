@@ -10,7 +10,7 @@ import { categories, demoDates, formatDeliveryDate, getDemoDay } from '../../../
 import { AppModal } from '../../../shared/ui/modal/AppModal';
 import { MenuSkeleton } from '../../../shared/ui/skeleton/ContentSkeleton';
 import { colors } from '../../../shared/ui/theme';
-import { hasLoadedContent, markContentLoaded } from '../../../shared/lib/contentCache';
+import { useContentLoading } from '../../../shared/lib/contentCache';
 import { useSession } from '../../../widgets/app-shell/model/Session';
 
 type Props = { onOpen: (meal: Meal) => void; onOpenSet: (id: number) => void; onAdd: (meal: Meal) => void; onAddSet: (image: ImageSourcePropType) => void; onProfile: () => void };
@@ -28,14 +28,7 @@ export function MenuExperience({ onOpen, onOpenSet, onAdd, onAddSet, onProfile }
   const sets = day.sets.filter(set => set.available);
   const cardWidth = (width - 50) / 2;
   const dayWidth = (width - 40 - 5 * 6) / 6;
-  const contentKey = `menu:${deliveryDate}:${activeCategory}:${menuView}`;
-  const [loading, setLoading] = useState(() => !hasLoadedContent(contentKey));
-  useEffect(() => {
-    if (hasLoadedContent(contentKey)) { setLoading(false); return; }
-    setLoading(true);
-    const timer = setTimeout(() => { markContentLoaded(contentKey); setLoading(false); }, 480);
-    return () => clearTimeout(timer);
-  }, [contentKey]);
+  const loading = useContentLoading(`day:${deliveryDate}`);
   const selectDate = (date: string) => {
     if (date === deliveryDate || getDemoDay(date).state === 'unavailable') return;
     if (cart.count) { setPendingDate(date); return; }
@@ -58,14 +51,13 @@ export function MenuExperience({ onOpen, onOpenSet, onAdd, onAddSet, onProfile }
       {loading && day.state === 'ready' ? <MenuSkeleton categories={availableCategories.length} sets={sets.length} meals={filtered.length} showSets={menuView === 'sets'} cardWidth={cardWidth} /> : <Animated.View key={deliveryDate} entering={FadeIn.duration(260)}>
       {day.state === 'ready' && <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categories}>{availableCategories.map(item => <CategoryChip key={item} item={item} photo={day.meals.find(meal => meal.category === item)?.image} active={item === activeCategory} onPress={() => chooseCategory(item)} />)}</ScrollView>}
       <Animated.View key={`${deliveryDate}:${activeCategory}:${menuView}`} entering={FadeInDown.duration(250)}>
-      {day.state !== 'ready' ? <View style={styles.empty}><Ionicons name="calendar-outline" size={31} color={colors.primary} /><Text style={styles.emptyTitle}>{day.state === 'empty' ? 'Меню ещё не опубликовано' : 'Дата недоступна'}</Text><Text style={styles.emptyBody}>{day.state === 'empty' ? 'Для этого дня пока нет блюд и комплексов.' : 'На этот день доставка в демо-сценарии недоступна.'} Выберите другой день.</Text></View> : <>
+      {day.state !== 'ready' ? <View style={styles.empty}><Ionicons name="calendar-outline" size={31} color={colors.primary} /><Text style={styles.emptyTitle}>{day.state === 'empty' ? 'Меню ещё не опубликовано' : 'Дата недоступна'}</Text><Text style={styles.emptyBody}>{day.state === 'empty' ? 'Для этого дня пока нет блюд и комплексов.' : 'На этот день доставка недоступна.'} Выберите другой день.</Text></View> : <>
         {menuView === 'sets' && <><View style={styles.sectionHead}><Text style={styles.sectionTitle}>Готовые комплексы</Text><Pressable onPress={showDishes} style={styles.sectionLink} accessibilityRole="button"><Text style={styles.sectionLinkText}>Все блюда</Text></Pressable></View>{sets.length ? <View style={styles.setGrid}>{sets.map((set, index) => <Animated.View key={set.id} entering={FadeInDown.delay(index * 65).duration(300)} style={[styles.setCard, { width: cardWidth }]}><Pressable onPress={() => onOpenSet(set.id)} accessibilityRole="button" accessibilityLabel={`Подробнее: ${set.name}`}><SetPhoto meals={set.mealIds.map(id => day.meals.find(meal => meal.id === id)).filter((meal): meal is Meal => !!meal)} height={135} /><View style={styles.setCopy}><Text style={styles.setName} numberOfLines={1}>{set.name}</Text><Text style={styles.setDescription} numberOfLines={2}>{set.description}</Text><Text style={styles.setMeta}>{set.mealIds.length} позиции</Text><Text style={styles.setPrice}>{set.total} ₽</Text></View></Pressable><Pressable onPress={() => addSet(set.mealIds)} accessibilityRole="button" accessibilityLabel={`Добавить ${set.name} в корзину`} style={styles.setButton}><Ionicons name="basket-outline" size={17} color="white" /><Text style={styles.setButtonText}>В корзину</Text></Pressable></Animated.View>)}</View> : <View style={styles.emptyCompact}><Text style={styles.emptyTitle}>Комплексов пока нет</Text><Text style={styles.emptyBody}>Соберите заказ из отдельных блюд этого дня.</Text></View>}</>}
         <View style={styles.sectionHead}><Text style={styles.sectionTitle}>{activeCategory}</Text>{activeCategory !== 'Все' && <Pressable onPress={() => chooseCategory('Все')} style={styles.sectionLink} accessibilityRole="button"><Text style={styles.sectionLinkText}>Сбросить</Text></Pressable>}</View>
         {filtered.length ? <View style={styles.dishes}>{filtered.map((meal, index) => <MealCard key={meal.id} meal={meal} index={index} onOpen={() => onOpen(meal)} onAdd={() => onAdd(meal)} />)}</View> : <View style={styles.emptyCompact}><Text style={styles.emptyTitle}>В категории пусто</Text><Text style={styles.emptyBody}>На выбранную дату здесь нет доступных блюд.</Text></View>}
       </>}
       </Animated.View>
       </Animated.View>}
-      <Text style={styles.demo}>Демо-меню · Доступность уточнит сервер после подключения</Text>
     </ScrollView>
     <AppModal visible={!!pendingDate} onClose={() => setPendingDate(null)} variant="dialog"><View style={styles.dialog}><Ionicons name="calendar-outline" size={30} color={colors.primary} /><Text style={styles.emptyTitle}>Сменить дату?</Text><Text style={styles.emptyBody}>Блюда в корзине привязаны к текущему меню. При смене даты корзина очистится.</Text><Pressable onPress={confirmDate} style={styles.confirmButton}><Text style={styles.confirmText}>Сменить и очистить корзину</Text></Pressable><Pressable onPress={() => setPendingDate(null)} style={styles.cancelButton}><Text style={styles.cancelText}>Оставить текущую дату</Text></Pressable></View></AppModal>
   </View>;

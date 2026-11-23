@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useContentLoading } from '../../../shared/lib/contentCache';
 import { Image, ImageSourcePropType, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Text } from '../../../shared/ui/typography';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,8 +14,7 @@ export function DetailPage({ kind, id, onClose, onAdded }: { kind: 'meal' | 'set
   const { height, width } = useWindowDimensions();
   const { cart, deliveryDate } = useSession();
   const [quantity, setQuantity] = useState(1);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => { const timer = setTimeout(() => setLoading(false), 360); return () => clearTimeout(timer); }, []);
+  const loading = useContentLoading(`day:${deliveryDate}`);
   const day = getDemoDay(deliveryDate);
   const meal = kind === 'meal' ? day.meals.find(item => item.id === id) : undefined;
   const set = kind === 'set' ? day.sets.find(item => String(item.id) === id && item.available) : undefined;
